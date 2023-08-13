@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -12,37 +11,45 @@ import (
 
 const (
 	registeredKeyPrefix = "/registered/"
-
-	configPrefix = "/config/"
+	configPrefix        = "/config/"
 )
 
 var (
 	ErrKeyIsRegistered = errors.New("key is registered")
+	ErrKeyNotFound     = errors.New("key not found")
 )
 
 type Registry struct {
 	etcdClient *clientv3.Client
 }
 
-func NewRegistry(endpoints []string) *Registry {
+func NewRegistry(endpoints []string) (*Registry, error) {
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   endpoints,
 		DialTimeout: 5 * time.Second,
 	})
 	if err != nil {
-		log.Fatal("etcd client error: ", err)
+		return nil, fmt.Errorf("etcd client error: %w", err)
 	}
-	return &Registry{etcdClient: cli}
+	return &Registry{etcdClient: cli}, nil
+}
+
+func (r *Registry) Close() error {
+	return r.etcdClient.Close()
+}
+
+func (r *Registry) generateKey(prefix, key string) string {
+	return fmt.Sprintf("%s%s", prefix, key)
 }
 
 func (r *Registry) Register(ctx context.Context, key, filePath string) error {
-	resp, err := r.etcdClient.Get(ctx, fmt.Sprintf("%s%s", registeredKeyPrefix, key))
+	resp, err := r.etcdClient.Get(ctx, r.generateKey(registeredKeyPrefix, key))
 	if err != nil {
 		return err
 	}
 
 	if resp.Count == 0 {
-		_, err = r.etcdClient.Put(ctx, fmt.Sprintf("%s%s", registeredKeyPrefix, key), filePath)
+		_, err = r.etcdClient.Put(ctx, r.generateKey(registeredKeyPrefix, key), filePath)
 		if err != nil {
 			return err
 		}
@@ -54,26 +61,22 @@ func (r *Registry) Register(ctx context.Context, key, filePath string) error {
 }
 
 func (r *Registry) Unregister(ctx context.Context, key string) error {
-	_, err := r.etcdClient.Delete(ctx, fmt.Sprintf("%s%s", registeredKeyPrefix, key))
-	if err != nil {
-		return err
-	}
-	return nil
+	_, err := r.etcdClient.Delete(ctx, r.generateKey(registeredKeyPrefix, key))
+	return err
 }
 
 func (r *Registry) Watch(ctx context.Context, key string) (clientv3.WatchChan, error) {
-	watchChan := r.etcdClient.Watch(ctx, fmt.Sprintf("%s%s", configPrefix, key))
-	return watchChan, nil
+	return r.etcdClient.Watch(ctx, r.generateKey(configPrefix, key)), nil
 }
 
 func (r *Registry) GetConfig(ctx context.Context, key string) ([]byte, error) {
-	resp, err := r.etcdClient.Get(ctx, fmt.Sprintf("%s%s", configPrefix, key))
+	resp, err := r.etcdClient.Get(ctx, r.generateKey(configPrefix, key))
 	if err != nil {
 		return nil, err
 	}
 
 	if resp.Count == 0 {
-		return nil, nil
+		return nil, ErrKeyNotFound
 	}
 
 	return resp.Kvs[0].Value, nil
